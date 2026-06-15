@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_DB: post_md_test
+          POSTGRES_USER: post_md
+          POSTGRES_PASSWORD: post_md
+        options: >-
+          --health-cmd "pg_isready -U post_md -d post_md_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:8.6.4-alpine3.23
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+        ports:
+          - 6379:6379
+
+    defaults:
+      run:
+        working-directory: src
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verificar bootstrap
+        run: |
+          test -f composer.json
+          test -f artisan
+
+      - name: Configurar PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: bcmath, gd, intl, mbstring, pcntl, pdo_pgsql, redis, zip
+          coverage: none
+          tools: composer:v2
+
+      - name: Configurar Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: src/package-lock.json
+
+      - name: Instalar Composer
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Instalar npm
+        run: npm ci --ignore-scripts
+
+      - name: Preparar ambiente
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+        env:
+          APP_ENV: testing
+
+      - name: Pint
+        run: ./vendor/bin/pint --test
+
+      - name: Testes
+        run: php artisan test
+        env:
+          APP_ENV: testing
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          DB_DATABASE: post_md_test
+          DB_USERNAME: post_md
+          DB_PASSWORD: post_md
+          CACHE_STORE: redis
+          SESSION_DRIVER: array
+          QUEUE_CONNECTION: sync
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+
+      - name: Build frontend
+        run: npm run build

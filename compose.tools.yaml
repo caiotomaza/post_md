@@ -1,0 +1,15 @@
+# Override opcional para ferramentas locais.
+#
+# Uso:
+# docker compose -f compose.yaml -f compose.tools.yaml up -d
+#
+# Não use em produção.
+
+services:
+  db:
+    ports:
+      - "127.0.0.1:${POSTGRES_FORWARD_PORT:-5432}:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:${REDIS_FORWARD_PORT:-6379}:6379"

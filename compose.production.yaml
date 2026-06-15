@@ -1,0 +1,165 @@
+﻿name: ${COMPOSE_PROJECT_NAME:-post_md}
+
+x-production-app: &production-app
+  build:
+    context: .
+    dockerfile: docker/php/Dockerfile
+    target: production
+    args:
+      PHP_VERSION: ${PHP_VERSION:-8.4.22}
+      COMPOSER_VERSION: ${COMPOSER_VERSION:-2.8}
+      NODE_IMAGE: ${NODE_IMAGE:-node:24-bookworm-slim}
+  image: post_md/app:${APP_IMAGE_TAG:-local}
+  restart: unless-stopped
+  init: true
+  environment:
+    APP_NAME: ${APP_NAME:-post_md}
+    APP_ENV: production
+    APP_DEBUG: "false"
+    APP_KEY: ${APP_KEY:?APP_KEY obrigatória}
+    APP_URL: ${APP_URL:?APP_URL obrigatória}
+    APP_LOCALE: ${APP_LOCALE:-pt_BR}
+    APP_FALLBACK_LOCALE: ${APP_FALLBACK_LOCALE:-pt_BR}
+    APP_TIMEZONE: ${APP_TIMEZONE:-UTC}
+    LOG_CHANNEL: ${LOG_CHANNEL:-stderr}
+    LOG_LEVEL: ${LOG_LEVEL:-warning}
+    DB_CONNECTION: pgsql
+    DB_HOST: db
+    DB_PORT: 5432
+    DB_DATABASE: ${POSTGRES_DB:?POSTGRES_DB obrigatória}
+    DB_USERNAME: ${POSTGRES_USER:?POSTGRES_USER obrigatória}
+    DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD obrigatória}
+    CACHE_STORE: redis
+    SESSION_DRIVER: redis
+    QUEUE_CONNECTION: redis
+    REDIS_CLIENT: phpredis
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+    REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD obrigatória}
+    FILESYSTEM_DISK: ${FILESYSTEM_DISK:-local}
+    SESSION_SECURE_COOKIE: "true"
+    SESSION_SAME_SITE: ${SESSION_SAME_SITE:-lax}
+  volumes:
+    - storage_data:/var/www/html/storage/app
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  networks:
+    - backend
+
+services:
+  app:
+    <<: *production-app
+    command: ["php-fpm"]
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/php-fpm-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  worker:
+    <<: *production-app
+    command:
+      - php
+      - artisan
+      - queue:work
+      - redis
+      - --sleep=1
+      - --tries=3
+      - --timeout=120
+      - --max-time=3600
+    stop_grace_period: 130s
+
+  scheduler:
+    <<: *production-app
+    command: ["php", "artisan", "schedule:work"]
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      target: web-production
+      args:
+        PHP_VERSION: ${PHP_VERSION:-8.4.22}
+        COMPOSER_VERSION: ${COMPOSER_VERSION:-2.8}
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-bookworm-slim}
+        NGINX_IMAGE: ${NGINX_IMAGE:-nginx:1.30.2-alpine3.23}
+    image: post_md/web:${APP_IMAGE_TAG:-local}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${APP_PORT:-8080}:80"
+    volumes:
+      - storage_data:/var/www/html/storage/app:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - edge
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/nginx-health | grep -q ok"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:18.4-alpine}
+    restart: unless-stopped
+    init: true
+    shm_size: 256mb
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB obrigatória}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER obrigatória}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD obrigatória}
+      PGDATA: /var/lib/postgresql/18/docker
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:8.6.4-alpine3.23}
+    restart: unless-stopped
+    init: true
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD obrigatória}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD obrigatória}
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+networks:
+  edge:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+  redis_data:
+  storage_data:
